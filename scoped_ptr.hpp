@@ -34,10 +34,7 @@ public:
         delete px;
     }
 
-    void reset(T* p = 0) {
-        BOOST_ASSERT(p == 0 || p != px); // catch self-reset errors
-        this_type(p).swap(*this);
-    }
+    void reset(T* p = 0) { this_type(p).swap(*this); }
 
     T& operator*() const { return *px; }
 
