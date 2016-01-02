@@ -11,6 +11,16 @@
  * 1. It will always run the task asynchronously, no launch policy is necessary
  * 2. The underlying thread is detached, so no blocking will occur unless the
  * user calls 'get' explicitly.
+ *
+ * Note: Constructing a task does not guarantee that the underlying thread
+ * will run to completion if main terminates before the task is finished.
+ * To enable this behavior (if the system is using POSIX threads), the user
+ * may perform a call to "pthread_exit", before the return from main. Doing
+ * so will cause the main thread to block at that point, until all threads
+ * have completed.
+ *
+ * For more information, see:
+ * http://man7.org/linux/man-pages/man3/pthread_exit.3.html
  */
 
 #include <future>
