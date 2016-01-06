@@ -29,10 +29,6 @@ class TaskManager {
     std::condition_variable cond;
     std::atomic<int> task_count{0};
 
-    // As the TaskManager is a singleton, this will occur during static
-    // deinitialization, and block until all tasks have finished.
-    ~TaskManager() { wait_all(); }
-
     template <typename R, typename F, typename... Args>
     static void set_value(std::promise<R>& promise, F&& f, Args&&... args) {
         promise.set_value(f(args...));
@@ -45,7 +41,7 @@ class TaskManager {
     }
 
     template <typename Prom, typename F, typename... Args>
-    static void worker(Prom promise, F&& f, Args&&... args) {
+    void worker(Prom promise, F&& f, Args&&... args) {
         try {
             set_value(promise, std::forward<F>(f), std::forward(args)...);
         } catch (...) {
@@ -55,33 +51,40 @@ class TaskManager {
                 // Ignore any other exceptions
             }
         }
-        std::unique_lock<std::mutex> lock{instance().mut};
-        instance().task_count--;
-        instance().cond.notify_all(); // notify_all, because multiple threads
-                                      // could call 'wait_all'
-    }
-
-    static TaskManager& instance() {
-        static TaskManager manager;
-        return manager;
+        std::unique_lock<std::mutex> lock{mut};
+        task_count--;
+        cond.notify_all(); // notify_all, because multiple threads
+                           // could call 'wait_all'
     }
 
 public:
     /**
+     * Obtain a handle to a statically initialized TaskManager.
+     */
+    static TaskManager& global() {
+        static TaskManager manager;
+        return manager;
+    }
+
+    ~TaskManager() { wait_all(); }
+
+    /**
      * Creates an asynchronous task and returns a future which will contain
      * the result of the async computation. Note that this task will begin
-     * immediately and that the program will not exit until all such tasks
-     * are completed.
+     * immediately and that the destructor for this future will not block.
+     * The thread will block until the completion of each task created by
+     * a TaskManager, when that TaskManager is destructed (or during static
+     * deinitialization, in the case of the 'global' instance)
      */
     template <typename F, typename... Args>
-    static std::future<std::result_of_t<F(Args...)>> spawn(F&& func,
-                                                           Args&&... args) {
+    std::future<std::result_of_t<F(Args...)>> spawn(F&& func, Args&&... args) {
         std::promise<std::result_of_t<F(Args...)>> promise;
         auto f = promise.get_future();
 
-        instance().task_count++;
-        std::thread(worker<decltype(promise), F, Args...>, std::move(promise),
-                    std::forward<F>(func), std::forward(args)...)
+        task_count++;
+        std::thread(&TaskManager::worker<decltype(promise), F, Args...>, this,
+                    std::move(promise), std::forward<F>(func),
+                    std::forward(args)...)
             .detach();
         return f;
     }
@@ -98,20 +101,28 @@ public:
     }
 
     /**
-     * Block the calling thread until all running tasks have completed.
+     * Block the calling thread until all tasks created by this TaskManager
+     * have been completed.
      */
-    static void wait_all() {
-        std::unique_lock<std::mutex> lock{instance().mut};
-        instance().cond.wait(lock, [] { return instance().task_count == 0; });
+    void wait_all() {
+        std::unique_lock<std::mutex> lock{mut};
+        cond.wait(lock, [this] { return task_count == 0; });
     }
 };
 
 /**
- * Analogous to 'std::async'. However, futures returned from 'run' will
- * always be executing asynchronously (no launch policy is required),
- * and the main thread will not exit until all such tasks are completed.
+ * A convenience alias for TaskManager::global().spawn()
  */
 template <typename F, typename... Args>
-inline std::future<std::result_of_t<F(Args...)>> run(F&& f, Args&&... args) {
-    return TaskManager::spawn(std::forward<F>(f), std::forward(args)...);
+inline std::future<std::result_of_t<F(Args...)>> spawn(F&& f, Args&&... args) {
+    return TaskManager::global().spawn(std::forward<F>(f),
+                                       std::forward(args)...);
+}
+
+/**
+ * A convenience alias for TaskManager::spawn_with_result()
+ */
+template <typename T>
+inline std::future<T> spawn_with_result(T&& result) {
+    return TaskManager::spawn_with_result(std::forward<T>(result));
 }
